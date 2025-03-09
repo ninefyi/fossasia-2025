@@ -1,0 +1,170 @@
+services:
+  mongo1:
+    image: mongo:latest
+    container_name: mongo1
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017", "--logpath", "/data/db/mongo.log"]
+    ports:
+      - 27017:27017
+    volumes:
+      - ./mongodb_storage/mongo1:/data/db
+    networks:
+      - mongo_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongo2:
+    image: mongo:latest
+    container_name: mongo2
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017", "--logpath", "/data/db/mongo.log"]
+    ports:
+      - 27018:27017
+    volumes:
+      - ./mongodb_storage/mongo2:/data/db
+    networks:
+      - mongo_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongo3:
+    image: mongo:latest
+    container_name: mongo3
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017", "--logpath", "/data/db/mongo.log"]
+    ports:
+      - 27019:27017
+    volumes:
+      - ./mongodb_storage/mongo3:/data/db
+    networks:
+      - mongo_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongo-init:
+    image: mongo:latest
+    container_name: mongo-init
+    restart: "no"
+    depends_on:
+      mongo1:
+        condition: service_healthy
+      mongo2:
+        condition: service_healthy
+      mongo3:
+        condition: service_healthy
+    networks:
+      - mongo_network
+    command: >
+      mongosh --host mongo1:27017 --eval '
+        try { 
+          rs.status() 
+        } catch (err) {
+          config = {
+            "_id": "rs0",
+            "members": [
+              {"_id": 0, "host": "mongo1:27017", "priority": 2},
+              {"_id": 1, "host": "mongo2:27017", "priority": 1},
+              {"_id": 2, "host": "mongo3:27017", "priority": 1}
+            ]
+          };
+          rs.initiate(config);
+        }'
+
+  mongo-express:
+    image: mongo-express
+    container_name: mongo-express
+    ports:
+      - "10081:8081"
+    environment:
+      ME_CONFIG_MONGODB_PORT: "27017"
+      ME_CONFIG_OPTIONS_EDITORTHEME: "ambiance"
+      ME_CONFIG_BASICAUTH_USERNAME: "admin"
+      ME_CONFIG_MONGODB_SERVER: "mongo1,mongo2,mongo3"
+      ME_CONFIG_BASICAUTH_PASSWORD: "StrongAdminPassw0rd^"
+      ME_CONFIG_MONGODB_URL: "mongodb://admin:StrongAdminPassw0rd^@mongo1:27017,mongo2:27017,mongo3:27017/?authSource=admin&replicaSet=rs0"
+    depends_on:
+      mongo1:
+        condition: service_healthy
+      mongo2:
+        condition: service_healthy
+      mongo3:
+        condition: service_healthy
+    networks:
+      - mongo_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/etc/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - mongo_network
+
+  percona-mongodb-exporter:
+    image: percona/mongodb_exporter:0.40.0
+    container_name: percona-mongodb-exporter
+    ports:
+      - "9216:9216"
+    command: ["--collect-all", "--compatible-mode", "--discovering-mode"]
+    environment:
+      - MONGODB_USER=test
+      - MONGODB_PASSWORD=testing
+      - MONGODB_URI=mongodb://mongo1:27017,mongo2:27017,mongo3:27017
+      - SPLIT_CLUSTER=true
+    networks:
+      - mongo_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/storage:/var/lib/grafana
+      - ./grafana/ini/grafana.ini:/etc/grafana/grafana.ini
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - mongo_network
+
+  alert-api:
+      build:
+        context: .
+        dockerfile: ./python-api/Dockerfile
+      container_name: alert-api
+      ports:
+        - "8055:5000"
+      restart: unless-stopped
+      networks:
+        - mongo_network
+
+# volumes:
+#   mongodb1_data:
+#   mongodb2_data:
+#   mongodb3_data:
+
+networks:
+  mongo_network:
+    driver: bridge
+
